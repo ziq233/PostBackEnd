@@ -29,6 +29,11 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - 健康检查: `http://127.0.0.1:8000/health`
 - 文档: `http://127.0.0.1:8000/docs`
 
+前端联调（CORS）：已允许以下来源
+- `http://localhost:5173`、`http://127.0.0.1:5173`
+- `http://localhost:3000`、`http://127.0.0.1:3000`
+如需其它来源，请在 `app/main.py` 的 `allow_origins` 中追加。
+
 ## 环境变量
 在项目根目录创建 `.env` 文件（已在 `.gitignore` 中忽略），至少包含：
 ```

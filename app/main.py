@@ -3,6 +3,7 @@ import logging
 from fastapi import FastAPI
 from fastapi import HTTPException
 from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 
 from .github_client import fork_repository
 from .logging_config import configure_logging
@@ -10,6 +11,20 @@ from .logging_config import configure_logging
 configure_logging()
 app = FastAPI(title="DPostBackend", version="0.1.0")
 logger = logging.getLogger("app.main")
+
+# CORS for local frontend dev
+app.add_middleware(
+	CORSMiddleware,
+	allow_origins=[
+		"http://localhost:5173",
+		"http://127.0.0.1:5173",
+		"http://localhost:3000",
+		"http://127.0.0.1:3000",
+	],
+	allow_credentials=True,
+	allow_methods=["*"],
+	allow_headers=["*"],
+)
 
 
 @app.get("/health")
