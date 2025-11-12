@@ -115,6 +115,35 @@ python .\scripts\test_pat.py --token "ghp_xxx"  # 或者直接传入
 
 **注意**: 测试用例文件会保存在 `./data/test_cases/` 目录下，文件名格式为 `{owner}_{repo}_{org}.json`（如果提供了 org）或 `{owner}_{repo}.json`（如果未提供 org）。如果文件已存在，会被覆盖。
 
+### 更新测试用例
+- 路径: `PUT /repos/test`
+- 请求方式: `multipart/form-data`
+- 请求参数:
+  - `repo_url` (string, required): GitHub 仓库地址
+  - `org` (string, optional): 组织名称
+  - `tech_stack` (string, required): 技术栈，可选值：
+    - `springboot_maven`
+    - `nodejs_express`
+    - `python_flask`
+  - `test_case_file` (file, required): OpenAPI 规范的测试用例 JSON 文件
+- 成功响应:
+```json
+{
+  "status": "ok",
+  "message": "Test case updated successfully",
+  "file_path": "./data/test_cases/owner_repo_org.json",
+  "repo_full_name": "owner/repo",
+  "org": "org-name",
+  "tech_stack": "springboot_maven"
+}
+```
+- 失败响应:
+  - `400`: 请求参数不合法（无效的 tech_stack、无效的仓库 URL、无效的 JSON 文件）
+  - `404`: 仓库未在数据库中找到（需要先 fork）或测试用例文件不存在（需要先使用 POST /repos/test 提交）
+  - `500`: 服务器内部错误
+
+**注意**: 此接口用于更新已存在的测试用例文件。如果测试用例文件不存在，请先使用 `POST /repos/test` 接口提交。
+
 ## 常用命令
 
 - 激活虚拟环境：

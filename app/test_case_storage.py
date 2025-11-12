@@ -63,3 +63,16 @@ async def load_test_case(owner: str, repo: str, org: str | None) -> dict[str, An
 
 	return await asyncio.to_thread(_load)
 
+
+async def test_case_exists(owner: str, repo: str, org: str | None) -> bool:
+	"""
+	Check if a test case file exists for the given repository.
+	"""
+	filename = _generate_filename(owner, repo, org)
+	file_path = TEST_CASES_DIR / filename
+
+	def _check() -> bool:
+		return file_path.exists()
+
+	return await asyncio.to_thread(_check)
+
