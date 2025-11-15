@@ -65,52 +65,94 @@ jobs:
       
       - name: Start application
         run: |
-          java -jar target/*.jar &
+          echo "Starting Spring Boot application..."
+          java -jar target/*.jar > app.log 2>&1 &
+          APP_PID=$!
+          echo "Application started with PID: $APP_PID"
+          echo "Waiting 30 seconds for initial startup..."
           sleep 30
+          echo "Checking if application process is still running..."
+          if ! ps -p $APP_PID > /dev/null; then
+            echo "ERROR: Application process died during startup!"
+            echo "=== Application Logs ==="
+            cat app.log || true
+            exit 1
+          fi
+          echo "Application process is running (PID: $APP_PID)"
         env:
           SPRING_PROFILES_ACTIVE: test
       
       - name: Wait for application to be ready
         run: |
-          timeout=60
+          echo "Waiting for application to be ready..."
+          timeout=120
           elapsed=0
           while ! curl -f http://localhost:8080/health 2>/dev/null; do
             if [ $elapsed -ge $timeout ]; then
-              echo "Application failed to start"
+              echo "ERROR: Application failed to start within $timeout seconds"
+              echo "=== Checking application status ==="
+              ps aux | grep java || true
+              echo "=== Checking if port 8080 is listening ==="
+              netstat -tlnp | grep 8080 || ss -tlnp | grep 8080 || true
+              echo "=== Application Logs (last 50 lines) ==="
+              tail -50 app.log || true
+              echo "=== Trying to access root endpoint ==="
+              curl -v http://localhost:8080/ || true
               exit 1
             fi
+            echo "Waiting for application... (elapsed: ${{elapsed}}s)"
             sleep 2
             elapsed=$((elapsed + 2))
           done
+          echo "Application is ready! Health check passed."
+          echo "=== Application Logs (last 20 lines) ==="
+          tail -20 app.log || true
       
       - name: Run API tests
         id: test
         run: |
-          python3 -m pip install requests
           python3 << 'EOF'
           import json
-          import requests
           import sys
           
           # Load test case
-          with open('{test_case_path}', 'r') as f:
-              test_case = json.load(f)
+          try:
+              with open('{test_case_path}', 'r') as f:
+                  test_case = json.load(f)
+              print("=" * 60)
+              print("Test Case Loaded Successfully")
+              print("=" * 60)
+              print(json.dumps(test_case, indent=2, ensure_ascii=False))
+              print("=" * 60)
+          except FileNotFoundError:
+              print(f"ERROR: Test case file '{test_case_path}' not found")
+              sys.exit(1)
+          except json.JSONDecodeError as e:
+              print(f"ERROR: Failed to parse test case JSON: {{e}}")
+              sys.exit(1)
+          except Exception as e:
+              print(f"ERROR: Failed to load test case: {{e}}")
+              sys.exit(1)
           
           # Run tests (simplified - should be replaced with actual test runner)
-          results = {{"status": "success", "tests": []}}
+          results = {{
+              "status": "success",
+              "tests": [],
+              "summary": {{
+                  "total": 0,
+                  "passed": 0,
+                  "failed": 0
+              }}
+          }}
           
-          # Send results to backend
-          try:
-              response = requests.post(
-                  '{backend_api_url}/repos/test-results',
-                  json={{"test_results": results}},
-                  timeout=30
-              )
-              response.raise_for_status()
-              print("Test results sent successfully")
-          except Exception as e:
-              print(f"Failed to send results: {{e}}")
-              sys.exit(1)
+          # Print test results to console
+          print("\\n" + "=" * 60)
+          print("Test Results")
+          print("=" * 60)
+          print(json.dumps(results, indent=2, ensure_ascii=False))
+          print("=" * 60)
+          print(f"Status: {{results['status']}}")
+          print("=" * 60)
           EOF
       
       - name: Stop application
@@ -145,53 +187,95 @@ jobs:
       
       - name: Start application
         run: |
-          npm start &
+          echo "Starting Node.js application..."
+          npm start > app.log 2>&1 &
+          APP_PID=$!
+          echo "Application started with PID: $APP_PID"
+          echo "Waiting 10 seconds for initial startup..."
           sleep 10
+          echo "Checking if application process is still running..."
+          if ! ps -p $APP_PID > /dev/null; then
+            echo "ERROR: Application process died during startup!"
+            echo "=== Application Logs ==="
+            cat app.log || true
+            exit 1
+          fi
+          echo "Application process is running (PID: $APP_PID)"
         env:
           NODE_ENV: test
           PORT: 3000
       
       - name: Wait for application to be ready
         run: |
-          timeout=60
+          echo "Waiting for application to be ready..."
+          timeout=120
           elapsed=0
           while ! curl -f http://localhost:3000/health 2>/dev/null; do
             if [ $elapsed -ge $timeout ]; then
-              echo "Application failed to start"
+              echo "ERROR: Application failed to start within $timeout seconds"
+              echo "=== Checking application status ==="
+              ps aux | grep node || true
+              echo "=== Checking if port 3000 is listening ==="
+              netstat -tlnp | grep 3000 || ss -tlnp | grep 3000 || true
+              echo "=== Application Logs (last 50 lines) ==="
+              tail -50 app.log || true
+              echo "=== Trying to access root endpoint ==="
+              curl -v http://localhost:3000/ || true
               exit 1
             fi
+            echo "Waiting for application... (elapsed: ${{elapsed}}s)"
             sleep 2
             elapsed=$((elapsed + 2))
           done
+          echo "Application is ready! Health check passed."
+          echo "=== Application Logs (last 20 lines) ==="
+          tail -20 app.log || true
       
       - name: Run API tests
         id: test
         run: |
-          python3 -m pip install requests
           python3 << 'EOF'
           import json
-          import requests
           import sys
           
           # Load test case
-          with open('{test_case_path}', 'r') as f:
-              test_case = json.load(f)
+          try:
+              with open('{test_case_path}', 'r') as f:
+                  test_case = json.load(f)
+              print("=" * 60)
+              print("Test Case Loaded Successfully")
+              print("=" * 60)
+              print(json.dumps(test_case, indent=2, ensure_ascii=False))
+              print("=" * 60)
+          except FileNotFoundError:
+              print(f"ERROR: Test case file '{test_case_path}' not found")
+              sys.exit(1)
+          except json.JSONDecodeError as e:
+              print(f"ERROR: Failed to parse test case JSON: {{e}}")
+              sys.exit(1)
+          except Exception as e:
+              print(f"ERROR: Failed to load test case: {{e}}")
+              sys.exit(1)
           
           # Run tests (simplified - should be replaced with actual test runner)
-          results = {{"status": "success", "tests": []}}
+          results = {{
+              "status": "success",
+              "tests": [],
+              "summary": {{
+                  "total": 0,
+                  "passed": 0,
+                  "failed": 0
+              }}
+          }}
           
-          # Send results to backend
-          try:
-              response = requests.post(
-                  '{backend_api_url}/repos/test-results',
-                  json={{"test_results": results}},
-                  timeout=30
-              )
-              response.raise_for_status()
-              print("Test results sent successfully")
-          except Exception as e:
-              print(f"Failed to send results: {{e}}")
-              sys.exit(1)
+          # Print test results to console
+          print("\\n" + "=" * 60)
+          print("Test Results")
+          print("=" * 60)
+          print(json.dumps(results, indent=2, ensure_ascii=False))
+          print("=" * 60)
+          print(f"Status: {{results['status']}}")
+          print("=" * 60)
           EOF
       
       - name: Stop application
@@ -227,24 +311,49 @@ jobs:
       
       - name: Start application
         run: |
-          python app.py &
+          echo "Starting Python Flask application..."
+          python app.py > app.log 2>&1 &
+          APP_PID=$!
+          echo "Application started with PID: $APP_PID"
+          echo "Waiting 10 seconds for initial startup..."
           sleep 10
+          echo "Checking if application process is still running..."
+          if ! ps -p $APP_PID > /dev/null; then
+            echo "ERROR: Application process died during startup!"
+            echo "=== Application Logs ==="
+            cat app.log || true
+            exit 1
+          fi
+          echo "Application process is running (PID: $APP_PID)"
         env:
           FLASK_ENV: test
           FLASK_PORT: 5000
       
       - name: Wait for application to be ready
         run: |
-          timeout=60
+          echo "Waiting for application to be ready..."
+          timeout=120
           elapsed=0
           while ! curl -f http://localhost:5000/health 2>/dev/null; do
             if [ $elapsed -ge $timeout ]; then
-              echo "Application failed to start"
+              echo "ERROR: Application failed to start within $timeout seconds"
+              echo "=== Checking application status ==="
+              ps aux | grep python | grep app.py || true
+              echo "=== Checking if port 5000 is listening ==="
+              netstat -tlnp | grep 5000 || ss -tlnp | grep 5000 || true
+              echo "=== Application Logs (last 50 lines) ==="
+              tail -50 app.log || true
+              echo "=== Trying to access root endpoint ==="
+              curl -v http://localhost:5000/ || true
               exit 1
             fi
+            echo "Waiting for application... (elapsed: ${{elapsed}}s)"
             sleep 2
             elapsed=$((elapsed + 2))
           done
+          echo "Application is ready! Health check passed."
+          echo "=== Application Logs (last 20 lines) ==="
+          tail -20 app.log || true
       
       - name: Run API tests
         id: test
