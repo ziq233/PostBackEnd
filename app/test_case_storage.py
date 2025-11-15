@@ -29,7 +29,7 @@ async def save_test_case(
 	owner: str, repo: str, org: str | None, test_case_json: dict[str, Any]
 ) -> str:
 	"""
-	Save OpenAPI test case JSON to file system.
+	Save test case JSON (DSL format) to file system.
 	Returns the file path where the test case was saved.
 	"""
 	filename = _generate_filename(owner, repo, org)
@@ -49,7 +49,7 @@ async def save_test_case(
 
 async def load_test_case(owner: str, repo: str, org: str | None) -> dict[str, Any] | None:
 	"""
-	Load OpenAPI test case JSON from file system.
+	Load test case JSON (DSL format) from file system.
 	Returns the JSON content or None if file doesn't exist.
 	"""
 	filename = _generate_filename(owner, repo, org)
@@ -79,7 +79,7 @@ async def test_case_exists(owner: str, repo: str, org: str | None) -> bool:
 
 async def delete_test_case(owner: str, repo: str, org: str | None) -> bool:
 	"""
-	Delete OpenAPI test case file from file system.
+	Delete test case JSON file from file system.
 	Returns True if deleted, False if file doesn't exist.
 	"""
 	filename = _generate_filename(owner, repo, org)

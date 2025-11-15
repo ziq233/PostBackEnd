@@ -167,3 +167,210 @@ async def delete_repository(
 			)
 		# Unexpected status code (not 204 and not error)
 		logger.warning("Unexpected status code: %s", response.status_code)
+
+
+async def get_file_content(
+	fork_owner: str,
+	repo: str,
+	path: str,
+	branch: str = "main",
+	timeout_seconds: float = 15.0,
+) -> dict | None:
+	"""
+	Get file content from GitHub repository.
+	Returns the file content dict with 'sha' and 'content' (base64 encoded), or None if file doesn't exist.
+	"""
+	logger.info("Get file request: fork_owner=%s, repo=%s, path=%s, branch=%s", fork_owner, repo, path, branch)
+
+	pat = get_github_pat()
+	headers = {
+		"Accept": "application/vnd.github+json",
+		"Authorization": f"Bearer {pat}",
+		"X-GitHub-Api-Version": "2022-11-28",
+		"User-Agent": "DPostBackend/0.1 (+fastapi; httpx)",
+	}
+
+	url = f"{GITHUB_API_BASE}/repos/{fork_owner}/{repo}/contents/{path}"
+	params = {"ref": branch}
+
+	async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+		response = await client.get(url, headers=headers, params=params)
+		logger.info("GitHub response: status=%s", response.status_code)
+		if response.status_code == 404:
+			# File doesn't exist, return None
+			return None
+		if response.status_code >= 400:
+			try:
+				err_json = response.json()
+			except Exception:
+				err_json = {"message": response.text}
+			logger.error("GitHub API error %s: %s", response.status_code, err_json)
+			raise httpx.HTTPStatusError(
+				message=f"GitHub API error {response.status_code}: {err_json.get('message', 'Unknown error')}",
+				request=response.request,
+				response=response,
+			)
+		return response.json()
+
+
+async def create_or_update_file(
+	fork_owner: str,
+	repo: str,
+	path: str,
+	content: str,
+	message: str,
+	branch: str = "main",
+	timeout_seconds: float = 15.0,
+) -> dict:
+	"""
+	Create or update a file in GitHub repository.
+	If file exists, it will be updated. If not, it will be created.
+	Returns the GitHub API response JSON.
+	"""
+	logger.info("Create/update file request: fork_owner=%s, repo=%s, path=%s", fork_owner, repo, path)
+
+	pat = get_github_pat()
+	headers = {
+		"Accept": "application/vnd.github+json",
+		"Authorization": f"Bearer {pat}",
+		"X-GitHub-Api-Version": "2022-11-28",
+		"User-Agent": "DPostBackend/0.1 (+fastapi; httpx)",
+	}
+
+	# Check if file exists to get its SHA
+	existing_file = await get_file_content(fork_owner, repo, path, branch, timeout_seconds)
+
+	import base64
+
+	# Encode content to base64
+	content_bytes = content.encode("utf-8")
+	content_base64 = base64.b64encode(content_bytes).decode("utf-8")
+
+	payload = {
+		"message": message,
+		"content": content_base64,
+		"branch": branch,
+	}
+
+	# If file exists, include SHA for update
+	if existing_file and "sha" in existing_file:
+		payload["sha"] = existing_file["sha"]
+		logger.debug("Updating existing file with SHA: %s", existing_file["sha"][:8])
+	else:
+		logger.debug("Creating new file")
+
+	url = f"{GITHUB_API_BASE}/repos/{fork_owner}/{repo}/contents/{path}"
+
+	async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+		response = await client.put(url, headers=headers, json=payload)
+		logger.info("GitHub response: status=%s", response.status_code)
+		if response.status_code >= 400:
+			try:
+				err_json = response.json()
+			except Exception:
+				err_json = {"message": response.text}
+			logger.error("GitHub API error %s: %s", response.status_code, err_json)
+			raise httpx.HTTPStatusError(
+				message=f"GitHub API error {response.status_code}: {err_json.get('message', 'Unknown error')}",
+				request=response.request,
+				response=response,
+			)
+		return response.json()
+
+
+async def trigger_workflow(
+	fork_owner: str,
+	repo: str,
+	workflow_id: str = "api-test.yml",
+	branch: str = "main",
+	timeout_seconds: float = 15.0,
+) -> dict:
+	"""
+	Trigger a GitHub Actions workflow using workflow_dispatch.
+	
+	Args:
+		fork_owner: The owner of the forked repository
+		repo: The repository name
+		workflow_id: The workflow file name (e.g., "api-test.yml") or workflow ID
+		branch: The branch to run the workflow on
+		timeout_seconds: Request timeout
+	
+	Returns:
+		GitHub API response JSON
+	"""
+	logger.info("Trigger workflow request: fork_owner=%s, repo=%s, workflow_id=%s, branch=%s", fork_owner, repo, workflow_id, branch)
+
+	pat = get_github_pat()
+	headers = {
+		"Accept": "application/vnd.github+json",
+		"Authorization": f"Bearer {pat}",
+		"X-GitHub-Api-Version": "2022-11-28",
+		"User-Agent": "DPostBackend/0.1 (+fastapi; httpx)",
+	}
+
+	# First, get the workflow ID by file name
+	# List workflows to find the one we want
+	workflows_url = f"{GITHUB_API_BASE}/repos/{fork_owner}/{repo}/actions/workflows"
+	
+	async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+		# Get list of workflows
+		workflows_response = await client.get(workflows_url, headers=headers)
+		if workflows_response.status_code >= 400:
+			try:
+				err_json = workflows_response.json()
+			except Exception:
+				err_json = {"message": workflows_response.text}
+			logger.error("GitHub API error %s: %s", workflows_response.status_code, err_json)
+			raise httpx.HTTPStatusError(
+				message=f"GitHub API error {workflows_response.status_code}: {err_json.get('message', 'Unknown error')}",
+				request=workflows_response.request,
+				response=workflows_response,
+			)
+		
+		workflows_data = workflows_response.json()
+		workflows = workflows_data.get("workflows", [])
+		
+		# Find workflow by name
+		workflow_id_num = None
+		for workflow in workflows:
+			if workflow.get("path") == f".github/workflows/{workflow_id}" or workflow.get("name") == workflow_id:
+				workflow_id_num = workflow.get("id")
+				break
+		
+		if not workflow_id_num:
+			# If not found by name, try using the workflow_id directly as numeric ID
+			logger.warning("Workflow %s not found by name, trying as ID", workflow_id)
+			try:
+				workflow_id_num = int(workflow_id)
+			except ValueError:
+				raise ValueError(f"Workflow '{workflow_id}' not found and is not a valid workflow ID")
+
+		# Trigger the workflow
+		trigger_url = f"{GITHUB_API_BASE}/repos/{fork_owner}/{repo}/actions/workflows/{workflow_id_num}/dispatches"
+		payload = {
+			"ref": branch,
+		}
+		
+		trigger_response = await client.post(trigger_url, headers=headers, json=payload)
+		logger.info("GitHub workflow trigger response: status=%s", trigger_response.status_code)
+		
+		if trigger_response.status_code == 204:
+			# 204 No Content is the expected success response
+			logger.info("Workflow triggered successfully")
+			return {"status": "triggered", "workflow_id": workflow_id_num}
+		
+		if trigger_response.status_code >= 400:
+			try:
+				err_json = trigger_response.json()
+			except Exception:
+				err_json = {"message": trigger_response.text}
+			logger.error("GitHub API error %s: %s", trigger_response.status_code, err_json)
+			raise httpx.HTTPStatusError(
+				message=f"GitHub API error {trigger_response.status_code}: {err_json.get('message', 'Unknown error')}",
+				request=trigger_response.request,
+				response=trigger_response,
+			)
+		
+		# Unexpected status code
+		logger.warning("Unexpected status code: %s", trigger_response.status_code)
+		return {"status": "unknown", "status_code": trigger_response.status_code}

@@ -1,15 +1,16 @@
 import json
 import logging
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 
-from .cache import delete_cached_response, repository_exists
+from .cache import delete_cached_response, get_cached_response, repository_exists
 from .database import init_db
-from .github_client import fork_repository, parse_repo_url
+from .github_client import create_or_update_file, fork_repository, get_file_content, parse_repo_url, trigger_workflow
 from .logging_config import configure_logging
-from .test_case_storage import delete_test_case, save_test_case, test_case_exists
+from .test_case_storage import delete_test_case, load_test_case, save_test_case, test_case_exists
+from .workflow_generator import generate_workflow
 
 configure_logging()
 app = FastAPI(title="DPostBackend", version="0.1.0")
@@ -71,13 +72,14 @@ async def create_fork(payload: ForkRequest):
 
 @app.post("/repos/test")
 async def submit_test_case(
+	background_tasks: BackgroundTasks,
 	repo_url: str = Form(...),
 	org: str | None = Form(None),
 	tech_stack: str = Form(...),
 	test_case_file: UploadFile = File(...),
 ):
 	"""
-	Submit OpenAPI test case for a repository.
+	Submit test case JSON (DSL format) for a repository.
 	Requires the repository to exist in the database (must be forked first).
 	"""
 	logger.info(
@@ -128,28 +130,40 @@ async def submit_test_case(
 	try:
 		file_path = await save_test_case(owner, repo, normalized_org, test_case_json)
 		logger.info("Test case saved successfully: %s", file_path)
-		return {
-			"status": "ok",
-			"message": "Test case saved successfully",
-			"file_path": file_path,
-			"repo_full_name": repo_full_name,
-			"org": normalized_org,
-			"tech_stack": tech_stack,
-		}
 	except Exception as e:
 		logger.error("Error saving test case: %s", e, exc_info=True)
 		raise HTTPException(status_code=500, detail=f"Error saving test case: {e}")
 
+	# Schedule background task to push test case and workflow to GitHub, and trigger workflow
+	# This allows the API to return immediately without waiting for GitHub operations
+	background_tasks.add_task(
+		_push_test_case_and_workflow,
+		repo_full_name=repo_full_name,
+		normalized_org=normalized_org,
+		tech_stack=tech_stack,
+	)
+
+	return {
+		"status": "ok",
+		"message": "Test case saved successfully. Pushing to GitHub and triggering tests in background...",
+		"file_path": file_path,
+		"repo_full_name": repo_full_name,
+		"org": normalized_org,
+		"tech_stack": tech_stack,
+		"note": "GitHub push and workflow trigger are running in background. Check GitHub Actions for test results.",
+	}
+
 
 @app.put("/repos/test")
 async def update_test_case(
+	background_tasks: BackgroundTasks,
 	repo_url: str = Form(...),
 	org: str | None = Form(None),
 	tech_stack: str = Form(...),
 	test_case_file: UploadFile = File(...),
 ):
 	"""
-	Update OpenAPI test case for a repository.
+	Update test case JSON (DSL format) for a repository.
 	Requires the repository to exist in the database and the test case file to exist.
 	"""
 	logger.info(
@@ -208,17 +222,28 @@ async def update_test_case(
 	try:
 		file_path = await save_test_case(owner, repo, normalized_org, test_case_json)
 		logger.info("Test case updated successfully: %s", file_path)
-		return {
-			"status": "ok",
-			"message": "Test case updated successfully",
-			"file_path": file_path,
-			"repo_full_name": repo_full_name,
-			"org": normalized_org,
-			"tech_stack": tech_stack,
-		}
 	except Exception as e:
 		logger.error("Error updating test case: %s", e, exc_info=True)
 		raise HTTPException(status_code=500, detail=f"Error updating test case: {e}")
+
+	# Schedule background task to push test case and workflow to GitHub, and trigger workflow
+	# This allows the API to return immediately without waiting for GitHub operations
+	background_tasks.add_task(
+		_push_test_case_and_workflow,
+		repo_full_name=repo_full_name,
+		normalized_org=normalized_org,
+		tech_stack=tech_stack,
+	)
+
+	return {
+		"status": "ok",
+		"message": "Test case updated successfully. Pushing to GitHub and triggering tests in background...",
+		"file_path": file_path,
+		"repo_full_name": repo_full_name,
+		"org": normalized_org,
+		"tech_stack": tech_stack,
+		"note": "GitHub push and workflow trigger are running in background. Check GitHub Actions for test results.",
+	}
 
 
 
@@ -286,3 +311,257 @@ async def delete_repository_endpoint(payload: DeleteRepositoryRequest):
 	}
 
 	return result
+
+
+async def _push_test_case_and_workflow(
+	repo_full_name: str,
+	normalized_org: str | None,
+	tech_stack: str,
+	backend_api_url: str | None = None,
+) -> dict:
+	"""
+	Helper function to push test case and workflow to GitHub repository.
+	Returns dict with push results.
+	"""
+	# Parse repository URL to get owner and repo
+	parsed = parse_repo_url(f"https://github.com/{repo_full_name}")
+	if not parsed:
+		raise ValueError(f"Invalid repository full name: {repo_full_name}")
+	original_owner, repo = parsed
+
+	# Get fork information from cache
+	fork_info = await get_cached_response(repo_full_name, normalized_org)
+	if not fork_info:
+		raise ValueError(f"Fork information for {repo_full_name} (org={normalized_org}) not found in cache.")
+
+	# Extract fork owner and repo name from fork response
+	fork_owner = fork_info.get("owner", {}).get("login")
+	if not fork_owner:
+		raise ValueError("Failed to extract fork owner from cached response.")
+	fork_repo = fork_info.get("name", repo)
+	fork_full_name = fork_info.get("full_name", f"{fork_owner}/{fork_repo}")
+	
+	# Get default branch
+	default_branch = fork_info.get("default_branch", "main")
+	if default_branch not in ["main", "master"]:
+		default_branch = "main"
+
+	# Check if test case file exists
+	test_case = await load_test_case(original_owner, repo, normalized_org)
+	if not test_case:
+		raise ValueError(f"Test case file for {repo_full_name} not found.")
+
+	# Get backend API URL
+	import os
+	api_url = backend_api_url or os.getenv("BACKEND_API_URL", "http://localhost:8000")
+
+	results = {
+		"files_pushed": [],
+		"workflow_triggered": False,
+		"fork_full_name": fork_full_name,
+	}
+
+	# Push test case file
+	try:
+		test_case_json_str = json.dumps(test_case, indent=2, ensure_ascii=False)
+		await create_or_update_file(
+			fork_owner=fork_owner,
+			repo=fork_repo,
+			path="test_case.json",
+			content=test_case_json_str,
+			message="Update test case file",
+			branch=default_branch,
+		)
+		results["files_pushed"].append("test_case.json")
+		logger.info("Test case file pushed successfully to %s", fork_full_name)
+	except Exception as e:
+		logger.error("Error pushing test case file: %s", e, exc_info=True)
+		raise
+
+	# Generate and push GitHub Actions workflow
+	workflow_was_new = False
+	try:
+		workflow_content = generate_workflow(
+			tech_stack=tech_stack,
+			test_case_path="test_case.json",
+			backend_api_url=api_url,
+		)
+		# Check if workflow file exists before pushing
+		existing_workflow = await get_file_content(
+			fork_owner=fork_owner,
+			repo=fork_repo,
+			path=".github/workflows/api-test.yml",
+			branch=default_branch,
+		)
+		workflow_was_new = existing_workflow is None
+		
+		await create_or_update_file(
+			fork_owner=fork_owner,
+			repo=fork_repo,
+			path=".github/workflows/api-test.yml",
+			content=workflow_content,
+			message="Update GitHub Actions workflow for API testing",
+			branch=default_branch,
+		)
+		results["files_pushed"].append(".github/workflows/api-test.yml")
+		logger.info("GitHub Actions workflow pushed successfully to %s", fork_full_name)
+		
+		# If workflow was newly created, wait a bit for GitHub to register it
+		if workflow_was_new:
+			import asyncio
+			logger.info("Workflow file is new, waiting 3 seconds for GitHub to register it...")
+			await asyncio.sleep(3)
+	except Exception as e:
+		logger.error("Error pushing GitHub Actions workflow: %s", e, exc_info=True)
+		raise
+
+	# Trigger the workflow (only once, after all files are pushed)
+	try:
+		trigger_result = await trigger_workflow(
+			fork_owner=fork_owner,
+			repo=fork_repo,
+			workflow_id="api-test.yml",
+			branch=default_branch,
+		)
+		results["workflow_triggered"] = True
+		results["workflow_trigger_id"] = trigger_result.get("workflow_id")
+		logger.info("GitHub Actions workflow triggered successfully")
+	except Exception as e:
+		# Don't fail if workflow trigger fails (workflow might not exist yet on first push)
+		logger.warning("Failed to trigger workflow: %s", e)
+		results["workflow_trigger_error"] = str(e)
+
+	return results
+
+
+class PushTestCaseRequest(BaseModel):
+	repo_url: str
+	org: str | None = None
+	tech_stack: str
+	backend_api_url: str | None = None
+
+
+@app.post("/repos/push-test")
+async def push_test_case_to_repo(payload: PushTestCaseRequest):
+	"""
+	Push test case file and GitHub Actions workflow to the forked repository.
+	Requires the repository to be forked and test case file to exist.
+	"""
+	logger.info(
+		"POST /repos/push-test received: repo_url=%s, org=%s, tech_stack=%s",
+		payload.repo_url,
+		payload.org,
+		payload.tech_stack,
+	)
+
+	# Validate tech_stack
+	valid_tech_stacks = ["springboot_maven", "nodejs_express", "python_flask"]
+	if payload.tech_stack not in valid_tech_stacks:
+		raise HTTPException(
+			status_code=400,
+			detail=f"Invalid tech_stack. Must be one of: {', '.join(valid_tech_stacks)}",
+		)
+
+	# Parse repository URL
+	parsed = parse_repo_url(payload.repo_url.strip())
+	if not parsed:
+		raise HTTPException(status_code=400, detail="Invalid GitHub repository URL")
+	original_owner, repo = parsed
+	repo_full_name = f"{original_owner}/{repo}"
+
+	# Normalize org
+	normalized_org = payload.org.strip() if payload.org and payload.org.strip() else None
+
+	# Check if repository exists in database
+	exists = await repository_exists(repo_full_name, normalized_org)
+	if not exists:
+		raise HTTPException(
+			status_code=404,
+			detail=f"Repository {repo_full_name} (org={normalized_org}) not found in database. Please fork it first.",
+		)
+
+	# Get fork information from cache
+	fork_info = await get_cached_response(repo_full_name, normalized_org)
+	if not fork_info:
+		raise HTTPException(
+			status_code=404,
+			detail=f"Fork information for {repo_full_name} (org={normalized_org}) not found in cache.",
+		)
+
+	# Extract fork owner and repo name from fork response
+	fork_owner = fork_info.get("owner", {}).get("login")
+	if not fork_owner:
+		raise HTTPException(
+			status_code=500,
+			detail="Failed to extract fork owner from cached response. Please fork the repository again.",
+		)
+	fork_repo = fork_info.get("name", repo)
+	fork_full_name = fork_info.get("full_name", f"{fork_owner}/{fork_repo}")
+	
+	# Get default branch (default to "main", fallback to "master")
+	default_branch = fork_info.get("default_branch", "main")
+	if default_branch not in ["main", "master"]:
+		default_branch = "main"  # Fallback to main if unknown
+
+	# Check if test case file exists
+	test_case = await load_test_case(original_owner, repo, normalized_org)
+	if not test_case:
+		raise HTTPException(
+			status_code=404,
+			detail=f"Test case file for {repo_full_name} (org={normalized_org}) not found. Please submit it first using POST /repos/test.",
+		)
+
+	# Get backend API URL (from payload or environment variable)
+	import os
+	backend_api_url = payload.backend_api_url or os.getenv("BACKEND_API_URL", "http://localhost:8000")
+
+	# Prepare results
+	results = {
+		"status": "ok",
+		"message": "Test case and workflow pushed successfully",
+		"repo_full_name": repo_full_name,
+		"fork_full_name": fork_full_name,
+		"org": normalized_org,
+		"tech_stack": payload.tech_stack,
+		"files_pushed": [],
+	}
+
+	# Push test case file
+	try:
+		test_case_json_str = json.dumps(test_case, indent=2, ensure_ascii=False)
+		test_case_result = await create_or_update_file(
+			fork_owner=fork_owner,
+			repo=fork_repo,
+			path="test_case.json",
+			content=test_case_json_str,
+			message="Add test case file",
+			branch=default_branch,
+		)
+		results["files_pushed"].append("test_case.json")
+		logger.info("Test case file pushed successfully to %s", fork_full_name)
+	except Exception as e:
+		logger.error("Error pushing test case file: %s", e, exc_info=True)
+		raise HTTPException(status_code=500, detail=f"Error pushing test case file: {e}")
+
+	# Generate and push GitHub Actions workflow
+	try:
+		workflow_content = generate_workflow(
+			tech_stack=payload.tech_stack,
+			test_case_path="test_case.json",
+			backend_api_url=backend_api_url,
+		)
+		workflow_result = await create_or_update_file(
+			fork_owner=fork_owner,
+			repo=fork_repo,
+			path=".github/workflows/api-test.yml",
+			content=workflow_content,
+			message="Add GitHub Actions workflow for API testing",
+			branch=default_branch,
+		)
+		results["files_pushed"].append(".github/workflows/api-test.yml")
+		logger.info("GitHub Actions workflow pushed successfully to %s", fork_full_name)
+	except Exception as e:
+		logger.error("Error pushing GitHub Actions workflow: %s", e, exc_info=True)
+		raise HTTPException(status_code=500, detail=f"Error pushing GitHub Actions workflow: {e}")
+
+	return results

@@ -22,7 +22,7 @@ pip install -r requirements.txt
 
 开发模式自动重载：
 ```powershell
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
 访问：
@@ -46,6 +46,12 @@ PAT 需要具备 `public_repo`（公共仓库）或 `repo`（含私有仓库）�
 LOG_LEVEL=DEBUG
 ```
 可选值：DEBUG/INFO/WARNING/ERROR/CRITICAL（默认 INFO）
+
+可选：设置后端 API URL（用于 GitHub Actions 发送测试结果）
+```
+BACKEND_API_URL=https://your-backend-domain.com
+```
+如果不设置，默认为 `http://localhost:8000`
 
 ### 数据库
 
@@ -96,16 +102,17 @@ python .\scripts\test_pat.py --token "ghp_xxx"  # 或者直接传入
     - `springboot_maven`
     - `nodejs_express`
     - `python_flask`
-  - `test_case_file` (file, required): OpenAPI 规范的测试用例 JSON 文件
-- 成功响应:
+  - `test_case_file` (file, required): DSL JSON 格式的测试用例文件
+- 成功响应（立即返回，不等待 GitHub 操作）:
 ```json
 {
   "status": "ok",
-  "message": "Test case saved successfully",
+  "message": "Test case saved successfully. Pushing to GitHub and triggering tests in background...",
   "file_path": "./data/test_cases/owner_repo_org.json",
   "repo_full_name": "owner/repo",
   "org": "org-name",
-  "tech_stack": "springboot_maven"
+  "tech_stack": "springboot_maven",
+  "note": "GitHub push and workflow trigger are running in background. Check GitHub Actions for test results."
 }
 ```
 - 失败响应:
@@ -113,7 +120,10 @@ python .\scripts\test_pat.py --token "ghp_xxx"  # 或者直接传入
   - `404`: 仓库未在数据库中找到（需要先 fork）
   - `500`: 服务器内部错误
 
-**注意**: 测试用例文件会保存在 `./data/test_cases/` 目录下，文件名格式为 `{owner}_{repo}_{org}.json`（如果提供了 org）或 `{owner}_{repo}.json`（如果未提供 org）。如果文件已存在，会被覆盖。
+**注意**: 
+- 测试用例文件会保存在 `./data/test_cases/` 目录下，文件名格式为 `{owner}_{repo}_{org}.json`（如果提供了 org）或 `{owner}_{repo}.json`（如果未提供 org）。如果文件已存在，会被覆盖。
+- **自动推送（后台执行）**: 保存测试用例后，系统会在后台自动将测试用例和 GitHub Actions 工作流推送到 fork 的仓库，并触发测试运行。API 会立即返回，不等待 GitHub 操作完成。
+- 如果推送失败（例如 fork 信息不存在），测试用例仍会保存在本地，但不会推送到 GitHub。错误信息会记录在日志中。
 
 ### 更新测试用例
 - 路径: `PUT /repos/test`
@@ -125,16 +135,17 @@ python .\scripts\test_pat.py --token "ghp_xxx"  # 或者直接传入
     - `springboot_maven`
     - `nodejs_express`
     - `python_flask`
-  - `test_case_file` (file, required): OpenAPI 规范的测试用例 JSON 文件
-- 成功响应:
+  - `test_case_file` (file, required): DSL JSON 格式的测试用例文件
+- 成功响应（立即返回，不等待 GitHub 操作）:
 ```json
 {
   "status": "ok",
-  "message": "Test case updated successfully",
+  "message": "Test case updated successfully. Pushing to GitHub and triggering tests in background...",
   "file_path": "./data/test_cases/owner_repo_org.json",
   "repo_full_name": "owner/repo",
   "org": "org-name",
-  "tech_stack": "springboot_maven"
+  "tech_stack": "springboot_maven",
+  "note": "GitHub push and workflow trigger are running in background. Check GitHub Actions for test results."
 }
 ```
 - 失败响应:
@@ -142,7 +153,10 @@ python .\scripts\test_pat.py --token "ghp_xxx"  # 或者直接传入
   - `404`: 仓库未在数据库中找到（需要先 fork）或测试用例文件不存在（需要先使用 POST /repos/test 提交）
   - `500`: 服务器内部错误
 
-**注意**: 此接口用于更新已存在的测试用例文件。如果测试用例文件不存在，请先使用 `POST /repos/test` 接口提交。
+**注意**: 
+- 此接口用于更新已存在的测试用例文件。如果测试用例文件不存在，请先使用 `POST /repos/test` 接口提交。
+- **自动推送（后台执行）**: 更新测试用例后，系统会在后台自动将更新的测试用例和 GitHub Actions 工作流推送到 fork 的仓库，并触发测试运行。API 会立即返回，不等待 GitHub 操作完成。
+- 如果推送失败（例如 fork 信息不存在），测试用例仍会保存在本地，但不会推送到 GitHub。错误信息会记录在日志中。
 
 ### 删除仓库
 - 路径: `DELETE /repos`
@@ -174,6 +188,50 @@ python .\scripts\test_pat.py --token "ghp_xxx"  # 或者直接传入
 **注意**: 
 - 此接口仅删除本地缓存（数据库中的缓存记录和测试用例文件），**不会删除 GitHub 上的仓库**
 - 删除操作不可逆，请谨慎使用
+
+### 推送测试用例和 GitHub Actions 配置
+- 路径: `POST /repos/push-test`
+- 请求体:
+```json
+{
+  "repo_url": "https://github.com/owner/repo",
+  "org": "optional-org-name",
+  "tech_stack": "springboot_maven",
+  "backend_api_url": "http://localhost:8000"
+}
+```
+- 请求参数:
+  - `repo_url` (string, required): 原始 GitHub 仓库地址
+  - `org` (string, optional): 组织名称
+  - `tech_stack` (string, required): 技术栈，可选值：
+    - `springboot_maven`
+    - `nodejs_express`
+    - `python_flask`
+  - `backend_api_url` (string, optional): 后端 API URL，用于接收测试结果。如果不提供，将从环境变量 `BACKEND_API_URL` 读取，默认为 `http://localhost:8000`
+- 成功响应:
+```json
+{
+  "status": "ok",
+  "message": "Test case and workflow pushed successfully",
+  "repo_full_name": "owner/repo",
+  "fork_full_name": "fork_owner/repo",
+  "org": "org-name",
+  "tech_stack": "springboot_maven",
+  "files_pushed": [
+    "test_case.json",
+    ".github/workflows/api-test.yml"
+  ]
+}
+```
+- 失败响应:
+  - `400`: 请求参数不合法（无效的 tech_stack、无效的仓库 URL）
+  - `404`: 仓库未在数据库中找到（需要先 fork）或测试用例文件不存在（需要先使用 POST /repos/test 提交）
+  - `500`: 服务器内部错误（推送文件失败）
+
+**注意**: 
+- 此接口会将测试用例文件（`test_case.json`）和 GitHub Actions 工作流文件（`.github/workflows/api-test.yml`）推送到 fork 的仓库中
+- 需要先 fork 仓库（`POST /repos/fork`）和提交测试用例（`POST /repos/test`）
+- GitHub Actions 工作流会根据技术栈自动生成，包含启动应用、运行测试和发送结果到后端的步骤
 
 ## 常用命令
 
