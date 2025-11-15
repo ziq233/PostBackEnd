@@ -84,29 +84,17 @@ jobs:
       
       - name: Wait for application to be ready
         run: |
-          echo "Waiting for application to be ready..."
-          timeout=120
-          elapsed=0
-          while ! curl -f http://localhost:8080/health 2>/dev/null; do
-            if [ $elapsed -ge $timeout ]; then
-              echo "ERROR: Application failed to start within $timeout seconds"
-              echo "=== Checking application status ==="
-              ps aux | grep java || true
-              echo "=== Checking if port 8080 is listening ==="
-              netstat -tlnp | grep 8080 || ss -tlnp | grep 8080 || true
-              echo "=== Application Logs (last 50 lines) ==="
-              tail -50 app.log || true
-              echo "=== Trying to access root endpoint ==="
-              curl -v http://localhost:8080/ || true
-              exit 1
+            echo "Waiting for port 8080..."
+            for i in {{1..60}}; do
+            if nc -z localhost 8080; then
+                echo "Application is ready!"
+                exit 0
             fi
-            echo "Waiting for application... (elapsed: ${{elapsed}}s)"
             sleep 2
-            elapsed=$((elapsed + 2))
-          done
-          echo "Application is ready! Health check passed."
-          echo "=== Application Logs (last 20 lines) ==="
-          tail -20 app.log || true
+            done
+            echo "ERROR: Application did not open port 8080"
+            exit 1
+
       
       - name: Run API tests
         id: test
