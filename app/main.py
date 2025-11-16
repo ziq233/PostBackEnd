@@ -133,6 +133,7 @@ async def get_test_results(
 	"""
 	Get the latest test result file for a repository.
 	Returns the most recent test result JSON file matching the repository URL and optional org.
+	Supports both original repository URLs and fork repository URLs.
 	"""
 	import os
 	from pathlib import Path
@@ -154,9 +155,21 @@ async def get_test_results(
 	if not parsed:
 		raise HTTPException(status_code=400, detail="Invalid GitHub repository URL")
 	owner, repo = parsed
+	repo_full_name = f"{owner}/{repo}"
 
 	# Normalize org
 	normalized_org = org.strip() if org and org.strip() else None
+
+	# Try to find fork information from database (in case query is for original repo)
+	# This helps us find test results that were saved with fork repo name
+	fork_full_name = None
+	try:
+		fork_info = await get_cached_response(repo_full_name, normalized_org)
+		if fork_info:
+			fork_full_name = fork_info.get("full_name")
+			logger.debug("Found fork info: original=%s, fork=%s", repo_full_name, fork_full_name)
+	except Exception as e:
+		logger.debug("Could not get fork info for %s (org=%s): %s", repo_full_name, normalized_org, e)
 
 	# Get all test result files, sorted by modification time (newest first)
 	all_files = sorted(results_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -175,18 +188,26 @@ async def get_test_results(
 			file_org = file_data.get("org")
 			
 			# Parse repo_full_name to get owner and repo
-			if file_repo_full_name:
-				parts = file_repo_full_name.split("/")
-				if len(parts) == 2:
-					file_owner = parts[0]
-					file_repo = parts[1]
-				else:
-					continue
-			else:
+			if not file_repo_full_name:
 				continue
 			
-			# Check if it matches
-			if file_owner != owner or file_repo != repo:
+			parts = file_repo_full_name.split("/")
+			if len(parts) != 2:
+				continue
+			
+			file_owner = parts[0]
+			file_repo = parts[1]
+			
+			# Check if it matches the query (either original repo or fork repo)
+			matches_repo = False
+			if file_owner == owner and file_repo == repo:
+				# Direct match (query is for fork repo or same repo)
+				matches_repo = True
+			elif fork_full_name and file_repo_full_name == fork_full_name:
+				# Match via fork mapping (query is for original repo, file has fork repo)
+				matches_repo = True
+			
+			if not matches_repo:
 				continue
 			
 			# Check org match
