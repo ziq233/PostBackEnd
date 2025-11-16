@@ -84,76 +84,26 @@ jobs:
       
       - name: Wait for application to be ready
         run: |
-          echo "Waiting for application to be ready..."
-          timeout=120
-          elapsed=0
-          while ! curl -f http://localhost:8080/health 2>/dev/null; do
-            if [ $elapsed -ge $timeout ]; then
-              echo "ERROR: Application failed to start within $timeout seconds"
-              echo "=== Checking application status ==="
-              ps aux | grep java || true
-              echo "=== Checking if port 8080 is listening ==="
-              netstat -tlnp | grep 8080 || ss -tlnp | grep 8080 || true
-              echo "=== Application Logs (last 50 lines) ==="
-              tail -50 app.log || true
-              echo "=== Trying to access root endpoint ==="
-              curl -v http://localhost:8080/ || true
-              exit 1
+            echo "Waiting for port 8080..."
+            for i in {{1..60}}; do
+            if nc -z localhost 8080; then
+                echo "Application is ready!"
+                exit 0
             fi
-            echo "Waiting for application... (elapsed: ${{elapsed}}s)"
             sleep 2
-            elapsed=$((elapsed + 2))
-          done
-          echo "Application is ready! Health check passed."
-          echo "=== Application Logs (last 20 lines) ==="
-          tail -20 app.log || true
+            done
+            echo "ERROR: Application did not open port 8080"
+            exit 1
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
       
       - name: Run API tests
         id: test
         run: |
-          python3 << 'EOF'
-          import json
-          import sys
-          
-          # Load test case
-          try:
-              with open('{test_case_path}', 'r') as f:
-                  test_case = json.load(f)
-              print("=" * 60)
-              print("Test Case Loaded Successfully")
-              print("=" * 60)
-              print(json.dumps(test_case, indent=2, ensure_ascii=False))
-              print("=" * 60)
-          except FileNotFoundError:
-              print(f"ERROR: Test case file '{test_case_path}' not found")
-              sys.exit(1)
-          except json.JSONDecodeError as e:
-              print(f"ERROR: Failed to parse test case JSON: {{e}}")
-              sys.exit(1)
-          except Exception as e:
-              print(f"ERROR: Failed to load test case: {{e}}")
-              sys.exit(1)
-          
-          # Run tests (simplified - should be replaced with actual test runner)
-          results = {{
-              "status": "success",
-              "tests": [],
-              "summary": {{
-                  "total": 0,
-                  "passed": 0,
-                  "failed": 0
-              }}
-          }}
-          
-          # Print test results to console
-          print("\\n" + "=" * 60)
-          print("Test Results")
-          print("=" * 60)
-          print(json.dumps(results, indent=2, ensure_ascii=False))
-          print("=" * 60)
-          print(f"Status: {{results['status']}}")
-          print("=" * 60)
-          EOF
+          node test-runner.js {test_case_path}
       
       - name: Stop application
         if: always()
@@ -234,49 +184,7 @@ jobs:
       - name: Run API tests
         id: test
         run: |
-          python3 << 'EOF'
-          import json
-          import sys
-          
-          # Load test case
-          try:
-              with open('{test_case_path}', 'r') as f:
-                  test_case = json.load(f)
-              print("=" * 60)
-              print("Test Case Loaded Successfully")
-              print("=" * 60)
-              print(json.dumps(test_case, indent=2, ensure_ascii=False))
-              print("=" * 60)
-          except FileNotFoundError:
-              print(f"ERROR: Test case file '{test_case_path}' not found")
-              sys.exit(1)
-          except json.JSONDecodeError as e:
-              print(f"ERROR: Failed to parse test case JSON: {{e}}")
-              sys.exit(1)
-          except Exception as e:
-              print(f"ERROR: Failed to load test case: {{e}}")
-              sys.exit(1)
-          
-          # Run tests (simplified - should be replaced with actual test runner)
-          results = {{
-              "status": "success",
-              "tests": [],
-              "summary": {{
-                  "total": 0,
-                  "passed": 0,
-                  "failed": 0
-              }}
-          }}
-          
-          # Print test results to console
-          print("\\n" + "=" * 60)
-          print("Test Results")
-          print("=" * 60)
-          print(json.dumps(results, indent=2, ensure_ascii=False))
-          print("=" * 60)
-          print(f"Status: {{results['status']}}")
-          print("=" * 60)
-          EOF
+          node test-runner.js {test_case_path}
       
       - name: Stop application
         if: always()
@@ -355,35 +263,15 @@ jobs:
           echo "=== Application Logs (last 20 lines) ==="
           tail -20 app.log || true
       
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
       - name: Run API tests
         id: test
         run: |
-          pip install requests
-          python3 << 'EOF'
-          import json
-          import requests
-          import sys
-          
-          # Load test case
-          with open('{test_case_path}', 'r') as f:
-              test_case = json.load(f)
-          
-          # Run tests (simplified - should be replaced with actual test runner)
-          results = {{"status": "success", "tests": []}}
-          
-          # Send results to backend
-          try:
-              response = requests.post(
-                  '{backend_api_url}/repos/test-results',
-                  json={{"test_results": results}},
-                  timeout=30
-              )
-              response.raise_for_status()
-              print("Test results sent successfully")
-          except Exception as e:
-              print(f"Failed to send results: {{e}}")
-              sys.exit(1)
-          EOF
+          node test-runner.js {test_case_path}
       
       - name: Stop application
         if: always()
