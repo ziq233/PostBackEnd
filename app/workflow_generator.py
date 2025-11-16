@@ -2,12 +2,17 @@
 Generate GitHub Actions workflow files for different tech stacks.
 """
 import logging
+import os
 from typing import Any
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 logger = logging.getLogger("app.workflow_generator")
 
-# Backend API URL - should be configurable via environment variable
-BACKEND_API_URL = "http://localhost:8000"  # Default, should be overridden via env
+# Backend API URL - loaded from environment variable or default
+BACKEND_API_URL = os.getenv("BACKEND_API_URL", "http://localhost:8000")
 
 
 def generate_workflow(
