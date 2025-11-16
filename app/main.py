@@ -323,6 +323,9 @@ async def _push_test_case_and_workflow(
 	Helper function to push test case and workflow to GitHub repository.
 	Returns dict with push results.
 	"""
+	import os
+	from pathlib import Path
+	
 	# Parse repository URL to get owner and repo
 	parsed = parse_repo_url(f"https://github.com/{repo_full_name}")
 	if not parsed:
@@ -352,7 +355,6 @@ async def _push_test_case_and_workflow(
 		raise ValueError(f"Test case file for {repo_full_name} not found.")
 
 	# Get backend API URL
-	import os
 	api_url = backend_api_url or os.getenv("BACKEND_API_URL", "http://localhost:8000")
 
 	results = {
@@ -360,6 +362,63 @@ async def _push_test_case_and_workflow(
 		"workflow_triggered": False,
 		"fork_full_name": fork_full_name,
 	}
+
+	# Check if this is the first time pushing test files (check if test_case.json exists in repo)
+	test_case_exists_in_repo = await get_file_content(
+		fork_owner=fork_owner,
+		repo=fork_repo,
+		path="test_case.json",
+		branch=default_branch,
+	)
+	is_first_push = test_case_exists_in_repo is None
+
+	# Push test runner files on first push
+	if is_first_push:
+		logger.info("First push detected, pushing test runner files...")
+		
+		# Files to push: test-runner.js, schema/jsonSchemaValidator.js, schema/schema.json
+		test_files = [
+			("test-runner.js", "test-runner.js"),
+			("schema/jsonSchemaValidator.js", "schema/jsonSchemaValidator.js"),
+			("schema/schema.json", "schema/schema.json"),
+		]
+		
+		for local_path, repo_path in test_files:
+			try:
+				file_path = Path(__file__).parent.parent / local_path
+				if not file_path.exists():
+					logger.warning("Test file not found locally: %s, skipping...", local_path)
+					continue
+				
+				# Check if file already exists in repo
+				existing_file = await get_file_content(
+					fork_owner=fork_owner,
+					repo=fork_repo,
+					path=repo_path,
+					branch=default_branch,
+				)
+				
+				if existing_file is None:
+					# Read file content
+					with open(file_path, "r", encoding="utf-8") as f:
+						file_content = f.read()
+					
+					# Push file
+					await create_or_update_file(
+						fork_owner=fork_owner,
+						repo=fork_repo,
+						path=repo_path,
+						content=file_content,
+						message=f"Add {repo_path} for API testing [skip ci]",
+						branch=default_branch,
+					)
+					results["files_pushed"].append(repo_path)
+					logger.info("Test file pushed successfully: %s", repo_path)
+				else:
+					logger.info("Test file already exists in repo: %s, skipping...", repo_path)
+			except Exception as e:
+				logger.warning("Error pushing test file %s: %s, continuing...", local_path, e, exc_info=True)
+				# Don't fail the whole process if test file push fails
 
 	# Push test case file
 	try:
