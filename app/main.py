@@ -1055,7 +1055,23 @@ async def sync_fork(payload: SyncForkRequest):
 	# Call GitHub API to merge upstream into fork
 	try:
 		result = await merge_upstream(fork_owner=fork_owner, repo=fork_repo, branch=branch)
-		# result may be dict or empty; return a friendly response
+		# After successful merge/upstream request, attempt to trigger the API test workflow on the fork.
+		trigger_info = {"triggered": False}
+		try:
+			trigger_result = await trigger_workflow(
+				fork_owner=fork_owner,
+				repo=fork_repo,
+				workflow_id="api-test.yml",
+				branch=branch,
+			)
+			trigger_info = {"triggered": True, "result": trigger_result}
+			logger.info("Triggered api-test workflow on %s/%s: %s", fork_owner, fork_repo, trigger_result)
+		except Exception as e:
+			# Do not fail the sync if triggering workflow fails; return the merge result and the trigger error info
+			logger.warning("Merge succeeded but failed to trigger workflow on %s/%s: %s", fork_owner, fork_repo, e, exc_info=True)
+			trigger_info = {"triggered": False, "error": str(e)}
+
+		# result may be dict or empty; return a friendly response including trigger info
 		return {
 			"status": "ok",
 			"message": "Sync request sent to GitHub",
@@ -1063,6 +1079,7 @@ async def sync_fork(payload: SyncForkRequest):
 			"fork_full_name": fork_info.get("full_name"),
 			"branch": branch,
 			"data": result,
+			"post_merge_trigger": trigger_info,
 		}
 	except Exception as e:
 		logger.error("Error syncing fork: %s", e, exc_info=True)
